@@ -243,7 +243,7 @@ pub enum Error {
     #[error("invalid kdf type: {ty}")]
     InvalidKdfType { ty: String },
 
-    #[error("ApiKey validity has ended, run the rbw login command again")]
+    #[error("ApiKey validity has ended, run the rbw purge && rbw login command again")]
     RunRbwLoginManually,
 }
 
