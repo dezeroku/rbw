@@ -242,6 +242,9 @@ pub enum Error {
 
     #[error("invalid kdf type: {ty}")]
     InvalidKdfType { ty: String },
+
+    #[error("ApiKey validity has ended, run the rbw login command again")]
+    RunRbwLoginManually,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

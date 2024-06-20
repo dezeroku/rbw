@@ -42,6 +42,8 @@ pub async fn login(
     let (access_token, refresh_token, protected_key) = client
         .login(
             email,
+            config.client_id.as_deref(),
+            config.client_secret.as_deref(),
             config.sso_id.as_deref(),
             &crate::config::device_id(&config).await?,
             &identity.master_password_hash,
@@ -288,9 +290,13 @@ where
     match f(access_token) {
         Ok(t) => Ok((None, t)),
         Err(Error::RequestUnauthorized) => {
-            let access_token = exchange_refresh_token(refresh_token)?;
-            let t = f(&access_token)?;
-            Ok((Some(access_token), t))
+            if refresh_token == "SPECIALAPIKEYCASE" {
+                Err(Error::RunRbwLoginManually)
+            } else {
+                let access_token = exchange_refresh_token(refresh_token)?;
+                let t = f(&access_token)?;
+                Ok((Some(access_token), t))
+            }
         }
         Err(e) => Err(e),
     }
@@ -313,10 +319,14 @@ where
     match f(access_token).await {
         Ok(t) => Ok((None, t)),
         Err(Error::RequestUnauthorized) => {
-            let access_token =
-                exchange_refresh_token_async(refresh_token).await?;
-            let t = f(&access_token).await?;
-            Ok((Some(access_token), t))
+            if refresh_token == "SPECIALAPIKEYCASE" {
+                Err(Error::RunRbwLoginManually)
+            } else {
+                let access_token =
+                    exchange_refresh_token_async(refresh_token).await?;
+                let t = f(&access_token).await?;
+                Ok((Some(access_token), t))
+            }
         }
         Err(e) => Err(e),
     }

@@ -338,6 +338,13 @@ struct ConnectTokenRes {
 }
 
 #[derive(serde::Deserialize, Debug)]
+struct ConnectTokenResApiKey {
+    access_token: String,
+    #[serde(rename = "Key", alias = "key")]
+    key: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
 struct ConnectErrorRes {
     error: String,
     error_description: Option<String>,
@@ -886,6 +893,12 @@ impl Client {
             .await
             .map_err(|source| Error::Reqwest { source })?;
         if res.status() == reqwest::StatusCode::OK {
+            println!("{res:?}");
+            let body = res.text().await;
+            //let connect_res: ConnectPasswordRes =
+            //    res.json_with_path().await?;
+
+            println!("{body:?}");
             Ok(())
         } else {
             let code = res.status().as_u16();
@@ -908,37 +921,58 @@ impl Client {
     pub async fn login(
         &self,
         email: &str,
+        client_id: Option<&str>,
+        client_secret: Option<&str>,
         sso_id: Option<&str>,
         device_id: &str,
         password_hash: &crate::locked::PasswordHash,
         two_factor_token: Option<&str>,
         two_factor_provider: Option<TwoFactorProviderType>,
     ) -> Result<(String, String, String)> {
-        let connect_req = match sso_id {
-            Some(sso_id) => {
-                let (sso_code, sso_code_verifier, callback_url) =
-                    self.obtain_sso_code(sso_id).await?;
-
-                ConnectTokenReq {
-                    auth: ConnectTokenAuth::AuthCode(ConnectTokenAuthCode {
-                        code: sso_code,
-                        code_verifier: sso_code_verifier,
-                        redirect_uri: callback_url,
-                    }),
-                    grant_type: "authorization_code".to_string(),
-                    scope: "api offline_access".to_string(),
-                    client_id: "cli".to_string(),
-                    device_type: 8,
-                    device_identifier: device_id.to_string(),
-                    device_name: "rbw".to_string(),
-                    device_push_token: String::new(),
-                    two_factor_token: two_factor_token
-                        .map(std::string::ToString::to_string),
-                    two_factor_provider: two_factor_provider
-                        .map(|ty| ty as u32),
-                }
+        let connect_req = if let (Some(client_id), Some(client_secret)) =
+            (client_id, client_secret)
+        {
+            ConnectTokenReq {
+                auth: ConnectTokenAuth::ClientCredentials(
+                    ConnectTokenClientCredentials {
+                        username: email.to_string(),
+                        client_secret: client_secret.to_string(),
+                    },
+                ),
+                grant_type: "client_credentials".to_string(),
+                scope: "api".to_string(),
+                // XXX unwraps here are not necessarily safe
+                client_id: client_id.to_string(),
+                device_type: 8,
+                device_identifier: device_id.to_string(),
+                device_name: "rbw".to_string(),
+                device_push_token: String::new(),
+                two_factor_token: None,
+                two_factor_provider: None,
             }
-            None => ConnectTokenReq {
+        } else if let Some(sso_id) = sso_id {
+            let (sso_code, sso_code_verifier, callback_url) =
+                self.obtain_sso_code(sso_id).await?;
+
+            ConnectTokenReq {
+                auth: ConnectTokenAuth::AuthCode(ConnectTokenAuthCode {
+                    code: sso_code,
+                    code_verifier: sso_code_verifier,
+                    redirect_uri: callback_url,
+                }),
+                grant_type: "authorization_code".to_string(),
+                scope: "api offline_access".to_string(),
+                client_id: "cli".to_string(),
+                device_type: 8,
+                device_identifier: device_id.to_string(),
+                device_name: "rbw".to_string(),
+                device_push_token: String::new(),
+                two_factor_token: two_factor_token
+                    .map(std::string::ToString::to_string),
+                two_factor_provider: two_factor_provider.map(|ty| ty as u32),
+            }
+        } else {
+            ConnectTokenReq {
                 auth: ConnectTokenAuth::Password(ConnectTokenPassword {
                     username: email.to_string(),
                     password: crate::base64::encode(password_hash.hash()),
@@ -954,7 +988,7 @@ impl Client {
                 two_factor_token: two_factor_token
                     .map(std::string::ToString::to_string),
                 two_factor_provider: two_factor_provider.map(|ty| ty as u32),
-            },
+            }
         };
 
         let client = self.reqwest_client().await?;
@@ -972,12 +1006,24 @@ impl Client {
             .map_err(|source| Error::Reqwest { source })?;
 
         if res.status() == reqwest::StatusCode::OK {
-            let connect_res: ConnectTokenRes = res.json_with_path().await?;
-            Ok((
-                connect_res.access_token,
-                connect_res.refresh_token,
-                connect_res.key,
-            ))
+            let body = res.text().await.unwrap();
+            if let Ok(connect_res) =
+                body.clone().json_with_path::<ConnectTokenRes>()
+            {
+                Ok((
+                    connect_res.access_token,
+                    connect_res.refresh_token,
+                    connect_res.key,
+                ))
+            } else {
+                let connect_res: ConnectTokenResApiKey =
+                    body.json_with_path()?;
+                Ok((
+                    connect_res.access_token,
+                    "SPECIALAPIKEYCASE".to_string(),
+                    connect_res.key,
+                ))
+            }
         } else {
             let code = res.status().as_u16();
             match res.text().await {
