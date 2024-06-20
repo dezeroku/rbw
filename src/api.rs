@@ -893,12 +893,6 @@ impl Client {
             .await
             .map_err(|source| Error::Reqwest { source })?;
         if res.status() == reqwest::StatusCode::OK {
-            println!("{res:?}");
-            let body = res.text().await;
-            //let connect_res: ConnectPasswordRes =
-            //    res.json_with_path().await?;
-
-            println!("{body:?}");
             Ok(())
         } else {
             let code = res.status().as_u16();
