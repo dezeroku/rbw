@@ -7,6 +7,7 @@ use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 pub struct Config {
     pub email: Option<String>,
     pub sso_id: Option<String>,
+    pub client_id: Option<String>,
     pub base_url: Option<String>,
     pub identity_url: Option<String>,
     pub ui_url: Option<String>,
@@ -28,6 +29,7 @@ impl Default for Config {
         Self {
             email: None,
             sso_id: None,
+            client_id: None,
             base_url: None,
             identity_url: None,
             ui_url: None,

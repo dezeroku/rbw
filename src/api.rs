@@ -20,6 +20,33 @@ use tokio::net::TcpListener;
 use tokio::sync::mpsc::{channel, Receiver, Sender};
 use urlencoding;
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct RefreshToken {
+    #[serde(flatten)]
+    value: RefreshTokenType,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(untagged)]
+enum RefreshTokenType {
+    ApiKey(RefreshTokenApiKey),
+    Jwt(RefreshTokenJwt),
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct RefreshTokenJwt {
+    refresh_token: String,
+}
+
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+struct RefreshTokenApiKey {
+    client_id: String,
+    client_secret: String,
+    // TODO: we'd probably want to get it from config/db directly
+    email: String,
+    device_id: String,
+}
+
 #[derive(
     serde_repr::Serialize_repr,
     serde_repr::Deserialize_repr,
@@ -333,6 +360,13 @@ struct ConnectTokenClientCredentials {
 struct ConnectTokenRes {
     access_token: String,
     refresh_token: String,
+    #[serde(rename = "Key", alias = "key")]
+    key: String,
+}
+
+#[derive(serde::Deserialize, Debug)]
+struct ConnectTokenApiKeyRes {
+    access_token: String,
     #[serde(rename = "Key", alias = "key")]
     key: String,
 }
@@ -919,37 +953,59 @@ impl Client {
     pub async fn login(
         &self,
         email: &str,
+        apikey: Option<&crate::locked::ApiKey>,
         sso_id: Option<&str>,
         device_id: &str,
-        password_hash: &crate::locked::PasswordHash,
+        password_hash: Option<&crate::locked::PasswordHash>,
         two_factor_token: Option<&str>,
         two_factor_provider: Option<TwoFactorProviderType>,
     ) -> Result<(String, String, String)> {
-        let connect_req = match sso_id {
-            Some(sso_id) => {
-                let (sso_code, sso_code_verifier, callback_url) =
-                    self.obtain_sso_code(sso_id).await?;
-
-                ConnectTokenReq {
-                    auth: ConnectTokenAuth::AuthCode(ConnectTokenAuthCode {
-                        code: sso_code,
-                        code_verifier: sso_code_verifier,
-                        redirect_uri: callback_url,
-                    }),
-                    grant_type: "authorization_code".to_string(),
-                    scope: "api offline_access".to_string(),
-                    client_id: "cli".to_string(),
-                    device_type: 8,
-                    device_identifier: device_id.to_string(),
-                    device_name: "rbw".to_string(),
-                    device_push_token: String::new(),
-                    two_factor_token: two_factor_token
-                        .map(std::string::ToString::to_string),
-                    two_factor_provider: two_factor_provider
-                        .map(|ty| ty as u32),
-                }
+        let connect_req = if let Some(ref apikey) = apikey {
+            ConnectTokenReq {
+                auth: ConnectTokenAuth::ClientCredentials(
+                    ConnectTokenClientCredentials {
+                        username: email.to_string(),
+                        client_secret: String::from_utf8(
+                            apikey.client_secret().to_vec(),
+                        )
+                        .unwrap(),
+                    },
+                ),
+                grant_type: "client_credentials".to_string(),
+                scope: "api".to_string(),
+                // XXX unwraps here are not necessarily safe
+                client_id: String::from_utf8(apikey.client_id().to_vec())
+                    .unwrap(),
+                device_type: 8,
+                device_identifier: device_id.to_string(),
+                device_name: "rbw".to_string(),
+                device_push_token: String::new(),
+                two_factor_token: None,
+                two_factor_provider: None,
             }
-            None => ConnectTokenReq {
+        } else if let Some(sso_id) = sso_id {
+            let (sso_code, sso_code_verifier, callback_url) =
+                self.obtain_sso_code(sso_id).await?;
+
+            ConnectTokenReq {
+                auth: ConnectTokenAuth::AuthCode(ConnectTokenAuthCode {
+                    code: sso_code,
+                    code_verifier: sso_code_verifier,
+                    redirect_uri: callback_url,
+                }),
+                grant_type: "authorization_code".to_string(),
+                scope: "api offline_access".to_string(),
+                client_id: "cli".to_string(),
+                device_type: 8,
+                device_identifier: device_id.to_string(),
+                device_name: "rbw".to_string(),
+                device_push_token: String::new(),
+                two_factor_token: two_factor_token
+                    .map(std::string::ToString::to_string),
+                two_factor_provider: two_factor_provider.map(|ty| ty as u32),
+            }
+        } else if let Some(password_hash) = password_hash {
+            ConnectTokenReq {
                 auth: ConnectTokenAuth::Password(ConnectTokenPassword {
                     username: email.to_string(),
                     password: crate::base64::encode(password_hash.hash()),
@@ -965,7 +1021,9 @@ impl Client {
                 two_factor_token: two_factor_token
                     .map(std::string::ToString::to_string),
                 two_factor_provider: two_factor_provider.map(|ty| ty as u32),
-            },
+            }
+        } else {
+            unreachable!();
         };
 
         let client = self.reqwest_client().await?;
@@ -981,11 +1039,49 @@ impl Client {
             .map_err(|source| Error::Reqwest { source })?;
 
         if res.status() == reqwest::StatusCode::OK {
-            let connect_res: ConnectTokenRes = res.json_with_path().await?;
+            let body = res.text().await.unwrap();
+            let (access_token, refresh_token, key) = if let Ok(connect_res) =
+                body.clone().json_with_path::<ConnectTokenRes>()
+            {
+                (
+                    connect_res.access_token,
+                    RefreshToken {
+                        value: RefreshTokenType::Jwt(RefreshTokenJwt {
+                            refresh_token: connect_res.refresh_token,
+                        }),
+                    },
+                    connect_res.key,
+                )
+            } else {
+                let connect_res: ConnectTokenApiKeyRes =
+                    body.json_with_path()?;
+
+                let apikey = apikey.unwrap();
+                let client_secret =
+                    String::from_utf8(apikey.client_secret().to_vec())
+                        .unwrap();
+                // XXX unwraps here are not necessarily safe
+                let client_id =
+                    String::from_utf8(apikey.client_id().to_vec()).unwrap();
+
+                (
+                    connect_res.access_token,
+                    RefreshToken {
+                        value: RefreshTokenType::ApiKey(RefreshTokenApiKey {
+                            client_id,
+                            client_secret,
+                            email: email.to_string(),
+                            device_id: device_id.to_string(),
+                        }),
+                    },
+                    connect_res.key,
+                )
+            };
+
             Ok((
-                connect_res.access_token,
-                connect_res.refresh_token,
-                connect_res.key,
+                access_token,
+                serde_json::to_string(&refresh_token).unwrap(),
+                key,
             ))
         } else {
             let code = res.status().as_u16();
@@ -1459,40 +1555,126 @@ impl Client {
         &self,
         refresh_token: &str,
     ) -> Result<String> {
-        let connect_req = ConnectRefreshTokenReq {
-            grant_type: "refresh_token".to_string(),
-            client_id: "cli".to_string(),
-            refresh_token: refresh_token.to_string(),
-        };
-        let client = reqwest::blocking::Client::new();
-        let res = client
-            .post(self.identity_url("/connect/token"))
-            .form(&connect_req)
-            .send()
-            .map_err(|source| Error::Reqwest { source })?;
-        let connect_res: ConnectRefreshTokenRes = res.json_with_path()?;
-        Ok(connect_res.access_token)
+        match deserialize_refresh_token(refresh_token)? {
+            RefreshToken {
+                value:
+                    RefreshTokenType::ApiKey(RefreshTokenApiKey {
+                        client_id,
+                        client_secret,
+                        email,
+                        device_id,
+                    }),
+            } => {
+                let connect_req = ConnectTokenReq {
+                    auth: ConnectTokenAuth::ClientCredentials(
+                        ConnectTokenClientCredentials {
+                            username: email,
+                            client_secret: client_secret,
+                        },
+                    ),
+                    grant_type: "client_credentials".to_string(),
+                    scope: "api".to_string(),
+                    client_id: client_id,
+                    device_type: 8,
+                    device_identifier: device_id,
+                    device_name: "rbw".to_string(),
+                    device_push_token: String::new(),
+                    two_factor_token: None,
+                    two_factor_provider: None,
+                };
+                let client = reqwest::blocking::Client::new();
+                let res = client
+                    .post(self.identity_url("/connect/token"))
+                    .form(&connect_req)
+                    .send()
+                    .map_err(|source| Error::Reqwest { source })?;
+
+                let connect_res: ConnectTokenApiKeyRes =
+                    res.json_with_path()?;
+
+                Ok(connect_res.access_token)
+            }
+            RefreshToken {
+                value:
+                    RefreshTokenType::Jwt(RefreshTokenJwt { refresh_token }),
+            } => {
+                let connect_req = ConnectRefreshTokenReq {
+                    grant_type: "refresh_token".to_string(),
+                    client_id: "cli".to_string(),
+                    refresh_token: refresh_token.to_string(),
+                };
+                let client = reqwest::blocking::Client::new();
+                let res = client
+                    .post(self.identity_url("/connect/token"))
+                    .form(&connect_req)
+                    .send()
+                    .map_err(|source| Error::Reqwest { source })?;
+                let connect_res: ConnectRefreshTokenRes =
+                    res.json_with_path()?;
+                Ok(connect_res.access_token)
+            }
+        }
     }
 
     pub async fn exchange_refresh_token_async(
         &self,
         refresh_token: &str,
     ) -> Result<String> {
-        let connect_req = ConnectRefreshTokenReq {
-            grant_type: "refresh_token".to_string(),
-            client_id: "cli".to_string(),
-            refresh_token: refresh_token.to_string(),
-        };
-        let client = self.reqwest_client().await?;
-        let res = client
-            .post(&self.identity_url("/connect/token"))
-            .form(&connect_req)
-            .send()
-            .await
-            .map_err(|source| Error::Reqwest { source })?;
-        let connect_res: ConnectRefreshTokenRes =
-            res.json_with_path().await?;
-        Ok(connect_res.access_token)
+        match deserialize_refresh_token(refresh_token)? {
+            RefreshToken {
+                value:
+                    RefreshTokenType::ApiKey(RefreshTokenApiKey {
+                        client_id,
+                        client_secret,
+                        email,
+                        device_id,
+                    }),
+            } => {
+                let mut client_id_vec = crate::locked::Vec::new();
+                client_id_vec.from_string(client_id);
+                let mut client_secret_vec = crate::locked::Vec::new();
+                client_secret_vec.from_string(client_secret);
+
+                let apikey = crate::locked::ApiKey::new(
+                    crate::locked::Password::new(client_id_vec),
+                    crate::locked::Password::new(client_secret_vec),
+                );
+
+                let (access_token, _, _) = self
+                    .login(
+                        email.as_str(),
+                        Some(&apikey),
+                        None,
+                        device_id.as_str(),
+                        None,
+                        None,
+                        None,
+                    )
+                    .await?;
+                Ok(access_token)
+            }
+
+            RefreshToken {
+                value:
+                    RefreshTokenType::Jwt(RefreshTokenJwt { refresh_token }),
+            } => {
+                let connect_req = ConnectRefreshTokenReq {
+                    grant_type: "refresh_token".to_string(),
+                    client_id: "cli".to_string(),
+                    refresh_token: refresh_token.to_string(),
+                };
+                let client = self.reqwest_client().await?;
+                let res = client
+                    .post(&self.identity_url("/connect/token"))
+                    .form(&connect_req)
+                    .send()
+                    .await
+                    .map_err(|source| Error::Reqwest { source })?;
+                let connect_res: ConnectRefreshTokenRes =
+                    res.json_with_path().await?;
+                Ok(connect_res.access_token)
+            }
+        }
     }
 
     fn api_url(&self, path: &str) -> String {
@@ -1502,6 +1684,12 @@ impl Client {
     fn identity_url(&self, path: &str) -> String {
         format!("{}{}", self.identity_url, path)
     }
+}
+
+fn deserialize_refresh_token(refresh_token: &str) -> Result<RefreshToken> {
+    let jd = &mut serde_json::Deserializer::from_str(refresh_token);
+    serde_path_to_error::deserialize(jd)
+        .map_err(|source| Error::Json { source })
 }
 
 async fn find_free_port(bottom: u16, top: u16) -> Result<u16> {

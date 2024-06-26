@@ -44,6 +44,11 @@ impl Vec {
     pub fn truncate(&mut self, len: usize) {
         self.data.truncate(len);
     }
+
+    pub fn from_string(&mut self, value: String) {
+        self.extend(value.clone().into_bytes().into_iter());
+        self.truncate(value.len());
+    }
 }
 
 impl Drop for Vec {
