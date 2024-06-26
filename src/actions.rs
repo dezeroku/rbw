@@ -7,7 +7,11 @@ pub async fn register(
     let (client, config) = api_client_async().await?;
 
     client
-        .register(email, &crate::config::device_id(&config).await?, &apikey)
+        .register(
+            email,
+            &crate::config::device_id_async(&config).await?,
+            &apikey,
+        )
         .await?;
 
     Ok(())
@@ -45,7 +49,7 @@ pub async fn login(
             email,
             apikey.as_ref(),
             config.sso_id.as_deref(),
-            &crate::config::device_id(&config).await?,
+            &crate::config::device_id_async(&config).await?,
             Some(&identity.master_password_hash),
             two_factor_token,
             two_factor_provider,

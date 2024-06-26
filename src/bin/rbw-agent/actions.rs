@@ -130,7 +130,9 @@ pub async fn login(
                 .context("failed to read client_secret from pinentry")?;
 
                 let mut client_id_vec = rbw::locked::Vec::new();
-                client_id_vec.from_string(client_id);
+                client_id_vec
+                    .extend(client_id.clone().into_bytes().into_iter());
+                client_id_vec.truncate(client_id.len());
 
                 Some(rbw::locked::ApiKey::new(
                     rbw::locked::Password::new(client_id_vec),

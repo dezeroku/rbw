@@ -42,9 +42,6 @@ struct RefreshTokenJwt {
 struct RefreshTokenApiKey {
     client_id: String,
     client_secret: String,
-    // TODO: we'd probably want to get it from config/db directly
-    email: String,
-    device_id: String,
 }
 
 #[derive(
@@ -337,7 +334,7 @@ struct ConnectTokenBase {
 
 impl Default for ConnectTokenBase {
     fn default() -> Self {
-        ConnectTokenBase {
+        Self {
             client_id: "cli".to_string(),
             device_type: 8,
             device_name: "rbw".to_string(),
@@ -972,7 +969,7 @@ impl Client {
         two_factor_token: Option<&str>,
         two_factor_provider: Option<TwoFactorProviderType>,
     ) -> Result<(String, String, String)> {
-        let connect_req = if let Some(ref apikey) = apikey {
+        let connect_req = if let Some(apikey) = apikey {
             // XXX unwraps here are not necessarily safe
             let client_id =
                 String::from_utf8(apikey.client_id().to_vec()).unwrap();
@@ -1072,8 +1069,6 @@ impl Client {
                         value: RefreshTokenType::ApiKey(RefreshTokenApiKey {
                             client_id,
                             client_secret,
-                            email: email.to_string(),
-                            device_id: device_id.to_string(),
                         }),
                     },
                     connect_res.key,
@@ -1563,10 +1558,12 @@ impl Client {
                     RefreshTokenType::ApiKey(RefreshTokenApiKey {
                         client_id,
                         client_secret,
-                        email,
-                        device_id,
                     }),
             } => {
+                let config = crate::config::Config::load()?;
+                let email = config.email()?;
+                let device_id = crate::config::device_id(&config)?;
+
                 let headers = token_endpoint_login_headers(email.as_str());
                 let connect_req = token_endpoint_login_request_apikey(
                     client_id,
@@ -1595,7 +1592,7 @@ impl Client {
                 let connect_req = ConnectRefreshTokenReq {
                     grant_type: "refresh_token".to_string(),
                     client_id: "cli".to_string(),
-                    refresh_token: refresh_token.to_string(),
+                    refresh_token,
                 };
                 let client = reqwest::blocking::Client::new();
                 let res = client
@@ -1620,10 +1617,13 @@ impl Client {
                     RefreshTokenType::ApiKey(RefreshTokenApiKey {
                         client_id,
                         client_secret,
-                        email,
-                        device_id,
                     }),
             } => {
+                let config = crate::config::Config::load()?;
+                let email = config.email()?;
+                let device_id =
+                    crate::config::device_id_async(&config).await?;
+
                 let headers = token_endpoint_login_headers(email.as_str());
                 let connect_req = token_endpoint_login_request_apikey(
                     client_id,
@@ -1687,14 +1687,14 @@ fn token_endpoint_login_request_apikey(
 ) -> ConnectTokenReq {
     ConnectTokenReq {
         base: ConnectTokenBase {
-            client_id: client_id,
+            client_id,
             ..Default::default()
         },
 
         auth: ConnectTokenAuth::ClientCredentials(
             ConnectTokenClientCredentials {
-                username: email.clone(),
-                client_secret: client_secret,
+                username: email,
+                client_secret,
             },
         ),
         grant_type: "client_credentials".to_string(),
