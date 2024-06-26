@@ -312,11 +312,19 @@ struct PreloginRes {
 struct ConnectTokenReq {
     grant_type: String,
     scope: String,
+    #[serde(rename = "deviceIdentifier")]
+    device_identifier: String,
+    #[serde(flatten)]
+    auth: ConnectTokenAuth,
+    #[serde(flatten)]
+    base: ConnectTokenBase,
+}
+
+#[derive(serde::Serialize, Debug)]
+struct ConnectTokenBase {
     client_id: String,
     #[serde(rename = "deviceType")]
     device_type: u32,
-    #[serde(rename = "deviceIdentifier")]
-    device_identifier: String,
     #[serde(rename = "deviceName")]
     device_name: String,
     #[serde(rename = "devicePushToken")]
@@ -325,8 +333,19 @@ struct ConnectTokenReq {
     two_factor_token: Option<String>,
     #[serde(rename = "twoFactorProvider")]
     two_factor_provider: Option<u32>,
-    #[serde(flatten)]
-    auth: ConnectTokenAuth,
+}
+
+impl Default for ConnectTokenBase {
+    fn default() -> Self {
+        ConnectTokenBase {
+            client_id: "cli".to_string(),
+            device_type: 8,
+            device_name: "rbw".to_string(),
+            device_push_token: String::new(),
+            two_factor_token: None,
+            two_factor_provider: None,
+        }
+    }
 }
 
 #[derive(serde::Serialize, Debug)]
@@ -901,32 +920,25 @@ impl Client {
         device_id: &str,
         apikey: &crate::locked::ApiKey,
     ) -> Result<()> {
-        let connect_req = ConnectTokenReq {
-            auth: ConnectTokenAuth::ClientCredentials(
-                ConnectTokenClientCredentials {
-                    username: email.to_string(),
-                    client_secret: String::from_utf8(
-                        apikey.client_secret().to_vec(),
-                    )
-                    .unwrap(),
-                },
-            ),
-            grant_type: "client_credentials".to_string(),
-            scope: "api".to_string(),
-            // XXX unwraps here are not necessarily safe
-            client_id: String::from_utf8(apikey.client_id().to_vec())
-                .unwrap(),
-            device_type: 8,
-            device_identifier: device_id.to_string(),
-            device_name: "rbw".to_string(),
-            device_push_token: String::new(),
-            two_factor_token: None,
-            two_factor_provider: None,
-        };
+        let headers = token_endpoint_login_headers(email);
+        // XXX unwraps here are not necessarily safe
+        let client_id =
+            String::from_utf8(apikey.client_id().to_vec()).unwrap();
+
+        let client_secret =
+            String::from_utf8(apikey.client_secret().to_vec()).unwrap();
+
+        let connect_req = token_endpoint_login_request_apikey(
+            client_id,
+            client_secret,
+            email.to_string(),
+            device_id.to_string(),
+        );
         let client = self.reqwest_client().await?;
         let res = client
             .post(&self.identity_url("/connect/token"))
             .form(&connect_req)
+            .headers(headers)
             .send()
             .await
             .map_err(|source| Error::Reqwest { source })?;
@@ -961,33 +973,31 @@ impl Client {
         two_factor_provider: Option<TwoFactorProviderType>,
     ) -> Result<(String, String, String)> {
         let connect_req = if let Some(ref apikey) = apikey {
-            ConnectTokenReq {
-                auth: ConnectTokenAuth::ClientCredentials(
-                    ConnectTokenClientCredentials {
-                        username: email.to_string(),
-                        client_secret: String::from_utf8(
-                            apikey.client_secret().to_vec(),
-                        )
-                        .unwrap(),
-                    },
-                ),
-                grant_type: "client_credentials".to_string(),
-                scope: "api".to_string(),
-                // XXX unwraps here are not necessarily safe
-                client_id: String::from_utf8(apikey.client_id().to_vec())
-                    .unwrap(),
-                device_type: 8,
-                device_identifier: device_id.to_string(),
-                device_name: "rbw".to_string(),
-                device_push_token: String::new(),
-                two_factor_token: None,
-                two_factor_provider: None,
-            }
+            // XXX unwraps here are not necessarily safe
+            let client_id =
+                String::from_utf8(apikey.client_id().to_vec()).unwrap();
+
+            let client_secret =
+                String::from_utf8(apikey.client_secret().to_vec()).unwrap();
+
+            token_endpoint_login_request_apikey(
+                client_id,
+                client_secret,
+                email.to_string(),
+                device_id.to_string(),
+            )
         } else if let Some(sso_id) = sso_id {
             let (sso_code, sso_code_verifier, callback_url) =
                 self.obtain_sso_code(sso_id).await?;
 
             ConnectTokenReq {
+                base: ConnectTokenBase {
+                    two_factor_token: two_factor_token
+                        .map(std::string::ToString::to_string),
+                    two_factor_provider: two_factor_provider
+                        .map(|ty| ty as u32),
+                    ..Default::default()
+                },
                 auth: ConnectTokenAuth::AuthCode(ConnectTokenAuthCode {
                     code: sso_code,
                     code_verifier: sso_code_verifier,
@@ -995,32 +1005,24 @@ impl Client {
                 }),
                 grant_type: "authorization_code".to_string(),
                 scope: "api offline_access".to_string(),
-                client_id: "cli".to_string(),
-                device_type: 8,
                 device_identifier: device_id.to_string(),
-                device_name: "rbw".to_string(),
-                device_push_token: String::new(),
-                two_factor_token: two_factor_token
-                    .map(std::string::ToString::to_string),
-                two_factor_provider: two_factor_provider.map(|ty| ty as u32),
             }
         } else if let Some(password_hash) = password_hash {
             ConnectTokenReq {
+                base: ConnectTokenBase {
+                    two_factor_token: two_factor_token
+                        .map(std::string::ToString::to_string),
+                    two_factor_provider: two_factor_provider
+                        .map(|ty| ty as u32),
+                    ..Default::default()
+                },
                 auth: ConnectTokenAuth::Password(ConnectTokenPassword {
                     username: email.to_string(),
                     password: crate::base64::encode(password_hash.hash()),
                 }),
-
                 grant_type: "password".to_string(),
                 scope: "api offline_access".to_string(),
-                client_id: "cli".to_string(),
-                device_type: 8,
                 device_identifier: device_id.to_string(),
-                device_name: "rbw".to_string(),
-                device_push_token: String::new(),
-                two_factor_token: two_factor_token
-                    .map(std::string::ToString::to_string),
-                two_factor_provider: two_factor_provider.map(|ty| ty as u32),
             }
         } else {
             unreachable!();
@@ -1565,27 +1567,19 @@ impl Client {
                         device_id,
                     }),
             } => {
-                let connect_req = ConnectTokenReq {
-                    auth: ConnectTokenAuth::ClientCredentials(
-                        ConnectTokenClientCredentials {
-                            username: email,
-                            client_secret: client_secret,
-                        },
-                    ),
-                    grant_type: "client_credentials".to_string(),
-                    scope: "api".to_string(),
-                    client_id: client_id,
-                    device_type: 8,
-                    device_identifier: device_id,
-                    device_name: "rbw".to_string(),
-                    device_push_token: String::new(),
-                    two_factor_token: None,
-                    two_factor_provider: None,
-                };
+                let headers = token_endpoint_login_headers(email.as_str());
+                let connect_req = token_endpoint_login_request_apikey(
+                    client_id,
+                    client_secret,
+                    email,
+                    device_id,
+                );
+
                 let client = reqwest::blocking::Client::new();
                 let res = client
                     .post(self.identity_url("/connect/token"))
                     .form(&connect_req)
+                    .headers(headers)
                     .send()
                     .map_err(|source| Error::Reqwest { source })?;
 
@@ -1630,28 +1624,27 @@ impl Client {
                         device_id,
                     }),
             } => {
-                let mut client_id_vec = crate::locked::Vec::new();
-                client_id_vec.from_string(client_id);
-                let mut client_secret_vec = crate::locked::Vec::new();
-                client_secret_vec.from_string(client_secret);
-
-                let apikey = crate::locked::ApiKey::new(
-                    crate::locked::Password::new(client_id_vec),
-                    crate::locked::Password::new(client_secret_vec),
+                let headers = token_endpoint_login_headers(email.as_str());
+                let connect_req = token_endpoint_login_request_apikey(
+                    client_id,
+                    client_secret,
+                    email,
+                    device_id,
                 );
 
-                let (access_token, _, _) = self
-                    .login(
-                        email.as_str(),
-                        Some(&apikey),
-                        None,
-                        device_id.as_str(),
-                        None,
-                        None,
-                        None,
-                    )
-                    .await?;
-                Ok(access_token)
+                let client = self.reqwest_client().await?;
+                let res = client
+                    .post(self.identity_url("/connect/token"))
+                    .form(&connect_req)
+                    .headers(headers)
+                    .send()
+                    .await
+                    .map_err(|source| Error::Reqwest { source })?;
+
+                let connect_res: ConnectTokenApiKeyRes =
+                    res.json_with_path().await?;
+
+                Ok(connect_res.access_token)
             }
 
             RefreshToken {
@@ -1684,6 +1677,51 @@ impl Client {
     fn identity_url(&self, path: &str) -> String {
         format!("{}{}", self.identity_url, path)
     }
+}
+
+fn token_endpoint_login_request_apikey(
+    client_id: String,
+    client_secret: String,
+    email: String,
+    device_id: String,
+) -> ConnectTokenReq {
+    ConnectTokenReq {
+        base: ConnectTokenBase {
+            client_id: client_id,
+            ..Default::default()
+        },
+
+        auth: ConnectTokenAuth::ClientCredentials(
+            ConnectTokenClientCredentials {
+                username: email.clone(),
+                client_secret: client_secret,
+            },
+        ),
+        grant_type: "client_credentials".to_string(),
+        scope: "api".to_string(),
+        device_identifier: device_id,
+    }
+}
+
+fn token_endpoint_login_headers(email: &str) -> reqwest::header::HeaderMap {
+    let mut headers = reqwest::header::HeaderMap::new();
+
+    headers.insert(
+        "Bitwarden-Client-Name",
+        env!("CARGO_PKG_NAME").parse().unwrap(),
+    );
+    headers.insert(
+        "Bitwarden-Client-Version",
+        env!("CARGO_PKG_VERSION").parse().unwrap(),
+    );
+    headers.insert(
+        "auth-email",
+        crate::base64::encode_url_safe_no_pad(email)
+            .parse()
+            .unwrap(),
+    );
+
+    headers
 }
 
 fn deserialize_refresh_token(refresh_token: &str) -> Result<RefreshToken> {
