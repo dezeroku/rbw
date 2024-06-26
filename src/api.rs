@@ -1565,7 +1565,7 @@ impl Client {
                 let connect_req = token_endpoint_login_request_apikey(
                     client_id,
                     client_secret,
-                    email,
+                    email.clone(),
                     device_id,
                 );
 
@@ -1573,6 +1573,10 @@ impl Client {
                 let res = client
                     .post(self.identity_url("/connect/token"))
                     .form(&connect_req)
+                    .header(
+                        "auth-email",
+                        crate::base64::encode_url_safe_no_pad(email),
+                    )
                     .send()
                     .map_err(|source| Error::Reqwest { source })?;
 
@@ -1623,7 +1627,7 @@ impl Client {
                 let connect_req = token_endpoint_login_request_apikey(
                     client_id,
                     client_secret,
-                    email,
+                    email.clone(),
                     device_id,
                 );
 
@@ -1631,6 +1635,10 @@ impl Client {
                 let res = client
                     .post(self.identity_url("/connect/token"))
                     .form(&connect_req)
+                    .header(
+                        "auth-email",
+                        crate::base64::encode_url_safe_no_pad(email),
+                    )
                     .send()
                     .await
                     .map_err(|source| Error::Reqwest { source })?;
