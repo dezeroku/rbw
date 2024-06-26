@@ -917,7 +917,6 @@ impl Client {
         device_id: &str,
         apikey: &crate::locked::ApiKey,
     ) -> Result<()> {
-        let headers = token_endpoint_login_headers(email);
         // XXX unwraps here are not necessarily safe
         let client_id =
             String::from_utf8(apikey.client_id().to_vec()).unwrap();
@@ -935,7 +934,6 @@ impl Client {
         let res = client
             .post(&self.identity_url("/connect/token"))
             .form(&connect_req)
-            .headers(headers)
             .send()
             .await
             .map_err(|source| Error::Reqwest { source })?;
@@ -1564,7 +1562,6 @@ impl Client {
                 let email = config.email()?;
                 let device_id = crate::config::device_id(&config)?;
 
-                let headers = token_endpoint_login_headers(email.as_str());
                 let connect_req = token_endpoint_login_request_apikey(
                     client_id,
                     client_secret,
@@ -1576,7 +1573,6 @@ impl Client {
                 let res = client
                     .post(self.identity_url("/connect/token"))
                     .form(&connect_req)
-                    .headers(headers)
                     .send()
                     .map_err(|source| Error::Reqwest { source })?;
 
@@ -1624,7 +1620,6 @@ impl Client {
                 let device_id =
                     crate::config::device_id_async(&config).await?;
 
-                let headers = token_endpoint_login_headers(email.as_str());
                 let connect_req = token_endpoint_login_request_apikey(
                     client_id,
                     client_secret,
@@ -1636,7 +1631,6 @@ impl Client {
                 let res = client
                     .post(self.identity_url("/connect/token"))
                     .form(&connect_req)
-                    .headers(headers)
                     .send()
                     .await
                     .map_err(|source| Error::Reqwest { source })?;
@@ -1701,27 +1695,6 @@ fn token_endpoint_login_request_apikey(
         scope: "api".to_string(),
         device_identifier: device_id,
     }
-}
-
-fn token_endpoint_login_headers(email: &str) -> reqwest::header::HeaderMap {
-    let mut headers = reqwest::header::HeaderMap::new();
-
-    headers.insert(
-        "Bitwarden-Client-Name",
-        env!("CARGO_PKG_NAME").parse().unwrap(),
-    );
-    headers.insert(
-        "Bitwarden-Client-Version",
-        env!("CARGO_PKG_VERSION").parse().unwrap(),
-    );
-    headers.insert(
-        "auth-email",
-        crate::base64::encode_url_safe_no_pad(email)
-            .parse()
-            .unwrap(),
-    );
-
-    headers
 }
 
 fn deserialize_refresh_token(refresh_token: &str) -> Result<RefreshToken> {
